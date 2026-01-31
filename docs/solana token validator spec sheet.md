@@ -7,15 +7,23 @@ Solana上のMemeコインのコントラクトアドレス（CA）を入力す�
 
 ### **【機能要件】**
 
-1. **CA/URL検索機能:** ユーザーがSolanaのCA、またはDEXScreener等のURLを入力し、解析を開始する。URLからのCA自動抽出機能を含む。
+1. **CA/URL検索機能:** ユーザーがSolanaのCA、またはDEXScreener等のURLを入力し、解析を開始する。URLからのCA自動抽出機能を含む。入力後はフォームを自動クリアし、連続入力に対応する。
     
-2. **市場データ解析:** 時価総額(MC/FDV)、流動性(Liquidity)、SNS情報を表示。複数のペアが存在する場合、最も流動性の高いペアを優先して表示する。
+2. **トークン基本情報表示:** 検索結果の冒頭に、トークン名、シンボル、およびロゴ画像を表示し、即座に対象を特定できるようにする。
     
-3. **セキュリティ診断:** ハニーポット判定、Mint権限（追加発行）、Freeze権限（取引停止）の有無、LPのBurn状況を判定。
+3. **履歴管理機能:** 解析結果をセッション内で保持し、新しい結果を常にリストの最上部に表示する。
     
-4. **コミュニティリンク抽出:** 公式X(Twitter)、公式サイト、Telegramへのリンクを表示。
+4. **個別削除機能:** 解析結果ごとに削除ボタン（❌）を設け、不要な情報を個別に消去可能とする。
     
-5. **総合判定（ランク付け）:** セキュリティと市場流動性を加味したスコアリングに基づき、「S・B・F」の3段階で評価。
+5. **市場データ解析:** 時価総額(MC/FDV)、流動性(Liquidity)、SNS情報を表示。複数のペアが存在する場合、最も流動性の高いペアを優先して表示する。
+    
+6. **セキュリティ診断:** ハニーポット判定、Mint権限（追加発行）、Freeze権限（取引停止）の有無、LPのBurn状況を判定。
+    
+7. **コミュニティリンク抽出:** 公式公式サイト、公式X(Twitter)、Telegramへのリンクを表示。
+    
+8. **補足データ表示:** 価格変化率（24時間）、取引数（buy/sell）、ペア作成日時を表示。情報の透明性を高めるため、データ取得日時を併記する。
+    
+9. **総合判定（ランク付け）:** セキュリティと市場流動性を加味したスコアリングに基づき、「S・B・F」の3段階で評価。結果は展開された状態で表示される。
     
 
 ### **【非機能要件】**
@@ -80,14 +88,16 @@ Solana上のMemeコインのコントラクトアドレス（CA）を入力す�
 
 ### **Step 3: UIの実装**
 
-1. `st.status` を用いた解析プロセスの可視化。
-2. `st.metric` を用いた主要数値の表示。
-3. 判定結果に基づいた警告メッセージの表示（`st.warning`, `st.error`）。
+1. `st.session_state` を用いた解析履歴の保持ロジックの実装。
+2. `on_change` コールバックを用いた入力フォームの自動クリア機能の実装。
+3. カード型UI（`st.container`）を用いた、展開済み状態での結果表示と削除ボタンの実装。
+4. `st.metric` を用いた主要数値の表示。
 
 ### **Step 4: テスト**
 
-1. 既知のラグプル、ハニーポット案件のCAでF判定が出るか。
-2. Bluechip（検証済みトークン）でS判定が出るか。
+1. 連続して異なるCAを入力し、新しい順に履歴が積み上がるか。
+2. 個別削除ボタンで対象のカードが消去されるか。
+3. 既知のラグプル、ハニーポット案件のCAでF判定が出るか。
 
 ---
 
@@ -97,107 +107,98 @@ Solana上のMemeコインのコントラクトアドレス（CA）を入力す�
 import streamlit as st
 import requests
 import re
+from datetime import datetime
+import uuid
 
 # --- 補助関数: CAの抽出 ---
 def extract_ca(input_text):
-    # SolanaのCA（Base58で32-44文字）を正規表現で抽出
     pattern = r'[1-9A-HJ-NP-Za-km-z]{32,44}'
     match = re.search(pattern, input_text)
     return match.group(0) if match else None
 
 # --- データ取得ロジック ---
 def get_data(ca):
-    # 1. Market Data (DEXScreener)
-    dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}"
-    dex_res = requests.get(dex_url).json()
-    
-    # 2. Security Data (GoPlus - Solana Specialized Endpoint)
-    goplus_url = f"https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={ca}"
-    go_res = requests.get(goplus_url).json()
-    
-    return dex_res, go_res
+    try:
+        dex_url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}"
+        dex_res = requests.get(dex_url, timeout=10).json()
+        goplus_url = f"https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={ca}"
+        go_res = requests.get(goplus_url, timeout=10).json()
+        return dex_res, go_res
+    except Exception as e:
+        return None, None
 
 # --- 判定スコアリング ---
 def calculate_safety(dex_data, go_data, ca):
     score = 100
     details = []
-    
-    # GoPlusのレスポンスは小文字のアドレスをキーに持つ
     results = go_data.get('result', {})
     sec = results.get(ca) or results.get(ca.lower()) or {}
     
     pair = None
     if dex_data.get('pairs'):
-        # 流動性が最大のペアを選択
         pair = max(dex_data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0))
-    
-    # セキュリティチェック項目 (Solana固有の構造)
+    if not pair: return None, None, None, None
+
+    # セキュリティチェック
     if sec.get('is_honeypot') == '1':
         score -= 100
         details.append("❌ ハニーポットの疑いあり")
-        
     if sec.get('mintable', {}).get('status') == '1':
         score -= 50
-        details.append("⚠️ Mint権限が有効（追加発行リスク）")
-        
+        details.append("⚠️ Mint権限が有効")
     if sec.get('freezable', {}).get('status') == '1':
         score -= 40
-        details.append("⚠️ Freeze権限が有効（取引停止リスク）")
+        details.append("⚠️ Freeze権限が有効")
         
-    # LP Burnチェック (DEXScreenerまたはGoPlusのデータを使用)
-    burn_pct = 0
-    if pair and 'liquidity' in pair:
-        # DEXScreenerのペア情報からBurn情報を推測することもあるが、
-        # ここではGoPlusのデータがあれば優先
-        pass
-    
-    # 市場データチェック項目
-    liquidity = pair.get('liquidity', {}).get('usd', 0) if pair else 0
-    if liquidity < 50000:
-        score -= 20
-        details.append(f"⚠️ 流動性が低い (${liquidity:,.0f})")
-    
-    return score, details, pair
+    # LP Burn判定
+    lp_burned = False
+    if 'pairAddress' in pair:
+        pair_address = pair['pairAddress']
+        for g_dex in sec.get('dex', []):
+            if g_dex.get('id') == pair_address:
+                if float(g_dex.get('burn_percent', 0)) > 95:
+                    lp_burned = True
+                    break
+    if lp_burned: score += 10
+    else: score -= 20; details.append("⚠️ LP未焼却（Rugpull）")
 
-# --- UI設定 ---
-st.set_page_config(page_title="Solana Safety Checker Pro", layout="centered")
-st.title("🛡️ Solana Meme Checker Pro")
+    return score, details, pair, lp_burned
 
-input_text = st.text_input("CAまたはDEXScreenerのURLを入力してください:")
-ca = extract_ca(input_text) if input_text else None
+# --- セッション管理とUI表示 ---
+if 'results' not in st.session_state: st.session_state.results = []
 
-if ca:
-    with st.status("データを解析中...", expanded=True) as status:
+def on_input_change():
+    input_text = st.session_state.ca_input_val
+    ca = extract_ca(input_text)
+    if ca:
         dex, go = get_data(ca)
-        if dex.get("pairs"):
-            score, warnings, pair = calculate_safety(dex, go, ca)
-            status.update(label="解析完了！", state="complete", expanded=False)
-            
-            # 結果表示
-            st.subheader(f"判定結果: {'🟢 S' if score >= 80 else '🟡 B' if score >= 50 else '🔴 F'} ランク")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("時価総額 (FDV)", f"${pair.get('fdv', 0):,.0f}")
-                st.metric("流動性 (USD)", f"${pair.get('liquidity', {}).get('usd', 0):,.0f}")
-            
-            with col2:
-                st.write("**安全性チェック:**")
-                if not warnings:
-                    st.success("重大なリスクは見つかりませんでした")
-                for w in warnings:
-                    st.warning(w)
-            
-            # ソーシャルリンク
-            if pair.get('info', {}).get('socials'):
-                st.write("---")
-                cols = st.columns(len(pair['info']['socials']))
-                for i, social in enumerate(pair['info']['socials']):
-                    cols[i].link_button(social['type'].capitalize(), social['url'])
-        else:
-            status.update(label="エラー", state="error")
-            st.error("トークン情報が見つかりませんでした。CAが正しいか、上場しているか確認してください。")
+        if dex and dex.get("pairs"):
+            score, warnings, pair, is_lp_burned = calculate_safety(dex, go, ca)
+            if pair:
+                res_obj = {
+                    "id": str(uuid.uuid4()), "ca": ca, "score": score, 
+                    "warnings": warnings, "pair": pair, "is_lp_burned": is_lp_burned, 
+                    "fetch_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                st.session_state.results.insert(0, res_obj)
+    st.session_state.ca_input_val = ""
+
+st.set_page_config(page_title="Solana Validator Pro", layout="centered", page_icon="🛡️")
+st.title("🛡️ Solana Token Validator Pro")
+
+st.text_input("Contract Address / DEXScreener URL", key="ca_input_val", on_change=on_input_change)
+
+for i, res in enumerate(st.session_state.results):
+    with st.container(border=True):
+        pair = res["pair"]
+        base_token = pair.get('baseToken', {})
+        st.subheader(f"{base_token.get('name')} ({base_token.get('symbol')})")
+        if st.button("❌", key=f"del_{res['id']}"):
+            st.session_state.results.pop(i)
+            st.rerun()
+        # (判定結果・メトリクス等の表示ロジック...)
 ```
+
 
 
 ---
@@ -216,3 +217,29 @@ GitHubと連携するだけで、無料でスマホからも利用可能なWeb�
    pandas
    ```
 3. [share.streamlit.io](https://share.streamlit.io/) でアプリをデプロイ。
+
+---
+
+## 6. 付録: DEXScreener API 参考資料 (Reference)
+
+### **【主要な取得フィールド】**
+
+| **階層 / フィールド** | **内容** | **用途** |
+| :--- | :--- | :--- |
+| **`pairs[]`** | トークンが上場している各市場（ペア）のリスト。 | 複数市場からのデータ集計。 |
+| ├ **`baseToken.name`** | トークンの正式名称。 | **[要件2]** ヘッダー表示。 |
+| ├ **`baseToken.symbol`** | トークンのシンボル（銘柄名）。 | **[要件2]** ヘッダー表示。 |
+| ├ **`priceChange`** | 5分/1時間/6時間/24時間の価格変化。 | **[要件6]** 補足データ表示。 |
+| ├ **`txns`** | 売買件数。 | **[要件6]** 補足データ表示。 |
+| ├ **`pairCreatedAt`** | ペアが作成された日時（Unix Time）。 | **[要件6]** 市場の歴史の確認。 |
+| ├ **`liquidity.usd`** | プール内の総流動性（USD）。 | 市場の厚みの判定に使用。 |
+| ├ **`fdv`** | 完全希薄化時価総額（FDV）。 | トークンの規模評価に使用。 |
+| └ **`info`** | 開発者が設定した各種情報。 | |
+| 　 ├ **`imageUrl`** | トークンのロゴ画像URL。 | **[要件2]** UIでのアイコン表示。 |
+| 　 ├ **`websites[]`** | 公式サイトのURLとラベルのリスト。 | コミュニティリンク抽出。 |
+| 　 └ **`socials[]`** | X(Twitter), Telegram等のSNSリンク。 | コミュニティリンク抽出。 |
+
+### **【利用上の注意点】**
+- **複数ペアの存在:** 一つのCAに対してRaydiumやOrcaなど複数のペアが返されるため、必ず `liquidity.usd` が最大のペアを特定して計算に利用する必要があります。
+- **データの鮮度:** APIはキャッシュされている場合があるため、超短期の価格変動よりも、時価総額や流動性といったファンダメンタルデータの取得に適しています。
+- **SNS情報の有無:** 新規作成直後のトークンには `info` フィールドが存在しない場合があるため、コード内での `None` チェックが必須です。
