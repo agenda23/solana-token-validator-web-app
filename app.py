@@ -172,7 +172,29 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🛡️ Solana Token Validator")
-st.text_input("Contract Address / DEXScreener URL", key="ca_input_val", on_change=on_input_change, placeholder="CAまたはURLを入力してEnter")
+
+# アプリ概要と解説
+st.markdown("""
+Solanaネットワーク上のトークンの技術的安全性と市場性を、リアルタイムで多角的に検証するツールです。
+DEXScreenerの市場動向とGoPlus Securityの技術診断を組み合わせ、独自のアルゴリズムで格付けを行います。
+""")
+
+with st.expander("💡 使い方と判定基準について"):
+    col_u, col_g = st.columns(2)
+    with col_u:
+        st.markdown("**使い方**")
+        st.caption("1. 下のアドレス枠にCA（コントラクトアドレス）またはDEXScreenerのURLを入力します。")
+        st.caption("2. Enterキーを押すと解析が開始され、結果がカード形式で表示されます。")
+    with col_g:
+        st.markdown("**判定ランク目安**")
+        st.markdown("""
+        - <span style='color: #996515;'>**S / A**</span>: 安全性が高く、コミュニティ実体あり
+        - <span style='color: #873600;'>**B**</span>: 安全だがSNS/Web未設定（早期・骨組み）
+        - <span style='color: #856404;'>**C / F+**</span>: 警告あり。権限残りや流動性不足
+        - <span style='color: #CC0000;'>**F / F-**</span>: 危険。重大なリスクまたはハニーポット
+        """, unsafe_allow_html=True)
+
+st.text_input("Contract Address / DEXScreener URL", key="ca_input_val", on_change=on_input_change, placeholder="CAまたはURLを入力してEnterキーを押してください")
 
 st.divider()
 
